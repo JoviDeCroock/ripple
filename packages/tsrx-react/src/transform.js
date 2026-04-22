@@ -304,6 +304,10 @@ function build_component_statements(
 	const render_nodes = [];
 	const bindings = new Map(available_bindings);
 
+	const pre_split_body = body_nodes.slice(0, split_index);
+	const interleaved = is_interleaved_body(pre_split_body);
+	let capture_index = 0;
+
 	for (let i = 0; i < split_index; i += 1) {
 		const child = body_nodes[i];
 
@@ -318,7 +322,29 @@ function build_component_statements(
 		}
 
 		if (is_jsx_child(child)) {
-			render_nodes.push(to_jsx_child(child, transform_context));
+			const jsx = to_jsx_child(child, transform_context);
+			if (interleaved && is_capturable_jsx_child(jsx)) {
+				const capture_id = create_generated_identifier(`_tsrx_child_${capture_index++}`);
+				const init = jsx.type === 'JSXExpressionContainer' ? jsx.expression : jsx;
+				statements.push(
+					/** @type {any} */ ({
+						type: 'VariableDeclaration',
+						kind: 'const',
+						declarations: [
+							/** @type {any} */ ({
+								type: 'VariableDeclarator',
+								id: create_generated_identifier(capture_id.name),
+								init,
+								metadata: { path: [] },
+							}),
+						],
+						metadata: { path: [] },
+					}),
+				);
+				render_nodes.push(to_jsx_expression_container(capture_id));
+			} else {
+				render_nodes.push(jsx);
+			}
 		} else {
 			statements.push(child);
 			collect_statement_bindings(child, bindings);
@@ -326,7 +352,9 @@ function build_component_statements(
 		}
 	}
 
-	hoist_static_render_nodes(render_nodes, transform_context);
+	if (!interleaved) {
+		hoist_static_render_nodes(render_nodes, transform_context);
+	}
 
 	const split_node = body_nodes[split_index];
 	const consequent_body =

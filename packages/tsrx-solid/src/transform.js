@@ -241,22 +241,70 @@ function component_to_function_declaration(component, transform_context) {
 		const early_if = /** @type {any} */ (body[early_idx]);
 		const before = body.slice(0, early_idx);
 		const after = body.slice(early_idx + 1);
+
+		// If mutations are interleaved with JSX children, the mutation and the
+		// JSX it affects can't both be hoisted out of order — that is the same
+		// bug `body_to_jsx_child` avoids. Capture each JSX child into a const
+		// at its source position so later mutations in the outer body don't
+		// retroactively change what earlier children rendered.
+		const early_interleaved = is_interleaved_body([...before, ...after]);
+
 		/** @type {any[]} */
 		const before_non_jsx = [];
 		/** @type {any[]} */
 		const before_jsx = [];
-		for (const child of before) {
-			if (is_jsx_child(child)) before_jsx.push(child);
-			else before_non_jsx.push(child);
-		}
 		/** @type {any[]} */
 		const after_non_jsx = [];
 		/** @type {any[]} */
 		const after_jsx = [];
-		for (const child of after) {
-			if (is_jsx_child(child)) after_jsx.push(child);
-			else after_non_jsx.push(child);
-		}
+		let early_capture_index = 0;
+
+		/**
+		 * @param {any[]} nodes
+		 * @param {any[]} outer
+		 * @param {any[]} jsx_bucket
+		 */
+		const collect = (nodes, outer, jsx_bucket) => {
+			for (const child of nodes) {
+				if (is_jsx_child(child)) {
+					if (early_interleaved) {
+						const jsx = to_jsx_child(child, transform_context);
+						if (is_capturable_jsx_child(jsx)) {
+							const capture_id = create_generated_identifier(
+								`_tsrx_child_${early_capture_index++}`,
+							);
+							const init = jsx.type === 'JSXExpressionContainer' ? jsx.expression : jsx;
+							outer.push(
+								/** @type {any} */ ({
+									type: 'VariableDeclaration',
+									kind: 'const',
+									declarations: [
+										/** @type {any} */ ({
+											type: 'VariableDeclarator',
+											id: create_generated_identifier(capture_id.name),
+											init,
+											metadata: { path: [] },
+										}),
+									],
+									metadata: { path: [] },
+								}),
+							);
+							jsx_bucket.push(to_jsx_expression_container(capture_id));
+						} else {
+							jsx_bucket.push(jsx);
+						}
+					} else {
+						jsx_bucket.push(child);
+					}
+				} else {
+					outer.push(child);
+				}
+			}
+		};
+
+		collect(before, before_non_jsx, before_jsx);
+		collect(after, after_non_jsx, after_jsx);
+
 		const lifted = [...before_jsx, ...after_jsx];
 		if (lifted.length > 0) {
 			transform_context.needs_show = true;

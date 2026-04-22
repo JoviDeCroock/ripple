@@ -1589,6 +1589,30 @@ describe('lazy destructuring', () => {
 		expect(second_capture).toBeGreaterThan(assign_two);
 	});
 
+	it('preserves source order for interleaved JSX across a hook-safe split', () => {
+		const { code } = compile(
+			`component Card() {
+				var a = "one"
+				<b>{"hello" + a}</b>
+				a = "two"
+				<b>{"hello" + a}</b>
+				if (true) return
+				const x = useState(0)
+				<div>{x}</div>
+			}`,
+			'Card.tsrx',
+		);
+
+		// The pre-split portion must still capture JSX at source position so
+		// the first <b> observes a = "one" and the second observes a = "two".
+		const first_capture = code.indexOf('_tsrx_child_0');
+		const assign_two = code.indexOf('a = "two"');
+		const second_capture = code.indexOf('_tsrx_child_1');
+		expect(first_capture).toBeGreaterThan(-1);
+		expect(assign_two).toBeGreaterThan(first_capture);
+		expect(second_capture).toBeGreaterThan(assign_two);
+	});
+
 	it('does not capture JSX into temporaries when all statements precede JSX', () => {
 		const { code } = compile(
 			`component Card() {

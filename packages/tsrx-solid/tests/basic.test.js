@@ -656,6 +656,31 @@ describe('@tsrx/solid basic', () => {
 			expect(code).not.toContain('_tsrx_child_');
 		});
 
+		it('preserves source order for interleaved JSX across an early-return guard', () => {
+			const { code } = compile(
+				`component Card(&{ cond }: { cond: boolean }) {
+					var a = "one"
+					<b>{"hello" + a}</b>
+					a = "two"
+					<b>{"hello" + a}</b>
+					if (cond) return
+					<div>{"done"}</div>
+				}`,
+				'Card.tsrx',
+			);
+
+			// The early-return path lifts JSX into a <Show>, but mutations between
+			// JSX siblings must still be honored — each JSX child is captured at its
+			// source position in the outer body so the first <b> sees a = "one".
+			const first_capture = code.indexOf('_tsrx_child_0');
+			const assign_two = code.indexOf('a = "two"');
+			const second_capture = code.indexOf('_tsrx_child_1');
+			expect(first_capture).toBeGreaterThan(-1);
+			expect(assign_two).toBeGreaterThan(first_capture);
+			expect(second_capture).toBeGreaterThan(assign_two);
+			expect(code).toContain('<Show');
+		});
+
 		it('preserves source order for interleaved statements at the component top level', () => {
 			const { code } = compile(
 				`component Card() {
