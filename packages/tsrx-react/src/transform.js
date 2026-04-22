@@ -14,6 +14,9 @@ import {
 	replaceLazyParams as replace_lazy_params,
 	prepareStylesheetForRender as prepare_stylesheet_for_render,
 	annotateComponentWithHash as annotate_component_with_hash,
+	isInterleavedBody as is_interleaved_body_core,
+	isCapturableJsxChild as is_capturable_jsx_child,
+	captureJsxChild,
 } from '@tsrx/core';
 
 /**
@@ -324,24 +327,9 @@ function build_component_statements(
 		if (is_jsx_child(child)) {
 			const jsx = to_jsx_child(child, transform_context);
 			if (interleaved && is_capturable_jsx_child(jsx)) {
-				const capture_id = create_generated_identifier(`_tsrx_child_${capture_index++}`);
-				const init = jsx.type === 'JSXExpressionContainer' ? jsx.expression : jsx;
-				statements.push(
-					/** @type {any} */ ({
-						type: 'VariableDeclaration',
-						kind: 'const',
-						declarations: [
-							/** @type {any} */ ({
-								type: 'VariableDeclarator',
-								id: create_generated_identifier(capture_id.name),
-								init,
-								metadata: { path: [] },
-							}),
-						],
-						metadata: { path: [] },
-					}),
-				);
-				render_nodes.push(to_jsx_expression_container(capture_id));
+				const { declaration, reference } = captureJsxChild(jsx, capture_index++);
+				statements.push(declaration);
+				render_nodes.push(reference);
 			} else {
 				render_nodes.push(jsx);
 			}
@@ -440,24 +428,9 @@ function build_render_statements(body_nodes, return_null_when_empty, transform_c
 		if (is_jsx_child(child)) {
 			const jsx = to_jsx_child(child, transform_context);
 			if (interleaved && is_capturable_jsx_child(jsx)) {
-				const capture_id = create_generated_identifier(`_tsrx_child_${capture_index++}`);
-				const init = jsx.type === 'JSXExpressionContainer' ? jsx.expression : jsx;
-				statements.push(
-					/** @type {any} */ ({
-						type: 'VariableDeclaration',
-						kind: 'const',
-						declarations: [
-							/** @type {any} */ ({
-								type: 'VariableDeclarator',
-								id: create_generated_identifier(capture_id.name),
-								init,
-								metadata: { path: [] },
-							}),
-						],
-						metadata: { path: [] },
-					}),
-				);
-				render_nodes.push(to_jsx_expression_container(capture_id));
+				const { declaration, reference } = captureJsxChild(jsx, capture_index++);
+				statements.push(declaration);
+				render_nodes.push(reference);
 			} else {
 				render_nodes.push(jsx);
 			}
@@ -484,37 +457,19 @@ function build_render_statements(body_nodes, return_null_when_empty, transform_c
 }
 
 /**
- * Returns true when the body contains a non-JSX statement that appears
- * after a JSX child. In that case JSX children must be captured at their
- * source position so mutations in following statements do not retroactively
- * change what earlier children rendered.
+ * React-specific wrapper around the core `isInterleavedBody` helper that
+ * ignores bare `return` / lone return-if statements. Those are rewriting
+ * signals rather than user-visible side effects, so JSX children around
+ * them don't need capturing.
  *
  * @param {any[]} body_nodes
  * @returns {boolean}
  */
 function is_interleaved_body(body_nodes) {
-	let seen_jsx = false;
-	for (const child of body_nodes) {
-		if (is_bare_return_statement(child) || is_lone_return_if_statement(child)) {
-			continue;
-		}
-		if (is_jsx_child(child)) {
-			seen_jsx = true;
-		} else if (seen_jsx) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/**
- * @param {any} jsx
- * @returns {boolean}
- */
-function is_capturable_jsx_child(jsx) {
-	if (!jsx) return false;
-	const t = jsx.type;
-	return t === 'JSXElement' || t === 'JSXFragment' || t === 'JSXExpressionContainer';
+	const filtered = body_nodes.filter(
+		(child) => !is_bare_return_statement(child) && !is_lone_return_if_statement(child),
+	);
+	return is_interleaved_body_core(filtered, is_jsx_child);
 }
 
 /**
