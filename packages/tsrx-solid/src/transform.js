@@ -268,10 +268,34 @@ function component_to_function_declaration(component, transform_context) {
 
 	const statements = [];
 	const render_nodes = [];
+	const interleaved = is_interleaved_body(effective_body);
+	let capture_index = 0;
 
 	for (const child of effective_body) {
 		if (is_jsx_child(child)) {
-			render_nodes.push(to_jsx_child(child, transform_context));
+			const jsx = to_jsx_child(child, transform_context);
+			if (interleaved && is_capturable_jsx_child(jsx)) {
+				const capture_id = create_generated_identifier(`_tsrx_child_${capture_index++}`);
+				const init = jsx.type === 'JSXExpressionContainer' ? jsx.expression : jsx;
+				statements.push(
+					/** @type {any} */ ({
+						type: 'VariableDeclaration',
+						kind: 'const',
+						declarations: [
+							/** @type {any} */ ({
+								type: 'VariableDeclarator',
+								id: create_generated_identifier(capture_id.name),
+								init,
+								metadata: { path: [] },
+							}),
+						],
+						metadata: { path: [] },
+					}),
+				);
+				render_nodes.push(to_jsx_expression_container(capture_id));
+			} else {
+				render_nodes.push(jsx);
+			}
 		} else {
 			statements.push(child);
 		}
@@ -416,13 +440,43 @@ function to_jsx_child(node, transform_context) {
  * @returns {any}
  */
 function body_to_jsx_child(body_nodes, transform_context) {
+	// When non-JSX statements are interleaved with JSX children, preserve
+	// source order by capturing each JSX child into a const at its textual
+	// position. Otherwise all statements would run before any JSX is
+	// constructed, so every JSX child would observe the final state of
+	// mutable variables instead of the value at its point in the source.
+	const interleaved = is_interleaved_body(body_nodes);
+
 	/** @type {any[]} */
 	const statements = [];
 	/** @type {any[]} */
 	const children = [];
+	let capture_index = 0;
 	for (const child of body_nodes) {
 		if (is_jsx_child(child)) {
-			children.push(to_jsx_child(child, transform_context));
+			const jsx = to_jsx_child(child, transform_context);
+			if (interleaved && is_capturable_jsx_child(jsx)) {
+				const capture_id = create_generated_identifier(`_tsrx_child_${capture_index++}`);
+				const init = jsx.type === 'JSXExpressionContainer' ? jsx.expression : jsx;
+				statements.push(
+					/** @type {any} */ ({
+						type: 'VariableDeclaration',
+						kind: 'const',
+						declarations: [
+							/** @type {any} */ ({
+								type: 'VariableDeclarator',
+								id: create_generated_identifier(capture_id.name),
+								init,
+								metadata: { path: [] },
+							}),
+						],
+						metadata: { path: [] },
+					}),
+				);
+				children.push(to_jsx_expression_container(capture_id));
+			} else {
+				children.push(jsx);
+			}
 		} else {
 			statements.push(child);
 		}
@@ -465,6 +519,37 @@ function body_to_jsx_child(body_nodes, transform_context) {
 		expression: false,
 		metadata: { path: [], is_branch_arrow: true },
 	});
+}
+
+/**
+ * Returns true when the body contains a non-JSX statement that appears
+ * after a JSX child. In that case JSX children must be captured at their
+ * source position so mutations in following statements do not retroactively
+ * change what earlier children rendered.
+ *
+ * @param {any[]} body_nodes
+ * @returns {boolean}
+ */
+function is_interleaved_body(body_nodes) {
+	let seen_jsx = false;
+	for (const child of body_nodes) {
+		if (is_jsx_child(child)) {
+			seen_jsx = true;
+		} else if (seen_jsx) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * @param {any} jsx
+ * @returns {boolean}
+ */
+function is_capturable_jsx_child(jsx) {
+	if (!jsx) return false;
+	const t = jsx.type;
+	return t === 'JSXElement' || t === 'JSXFragment' || t === 'JSXExpressionContainer';
 }
 
 /**

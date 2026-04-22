@@ -389,6 +389,14 @@ function build_render_statements(body_nodes, return_null_when_empty, transform_c
 	const saved_bindings = transform_context.available_bindings;
 	transform_context.available_bindings = new Map(saved_bindings);
 
+	// When non-JSX statements are interleaved with JSX children, we must
+	// preserve source order so each JSX expression sees the variable state
+	// at its textual position. Otherwise statements would all run before
+	// any JSX is constructed, and every JSX child would observe the final
+	// state of mutable variables.
+	const interleaved = is_interleaved_body(body_nodes);
+	let capture_index = 0;
+
 	for (const child of body_nodes) {
 		if (is_bare_return_statement(child)) {
 			statements.push(create_component_return_statement(render_nodes, child));
@@ -402,14 +410,38 @@ function build_render_statements(body_nodes, return_null_when_empty, transform_c
 		}
 
 		if (is_jsx_child(child)) {
-			render_nodes.push(to_jsx_child(child, transform_context));
+			const jsx = to_jsx_child(child, transform_context);
+			if (interleaved && is_capturable_jsx_child(jsx)) {
+				const capture_id = create_generated_identifier(`_tsrx_child_${capture_index++}`);
+				const init = jsx.type === 'JSXExpressionContainer' ? jsx.expression : jsx;
+				statements.push(
+					/** @type {any} */ ({
+						type: 'VariableDeclaration',
+						kind: 'const',
+						declarations: [
+							/** @type {any} */ ({
+								type: 'VariableDeclarator',
+								id: create_generated_identifier(capture_id.name),
+								init,
+								metadata: { path: [] },
+							}),
+						],
+						metadata: { path: [] },
+					}),
+				);
+				render_nodes.push(to_jsx_expression_container(capture_id));
+			} else {
+				render_nodes.push(jsx);
+			}
 		} else {
 			statements.push(child);
 			collect_statement_bindings(child, transform_context.available_bindings);
 		}
 	}
 
-	hoist_static_render_nodes(render_nodes, transform_context);
+	if (!interleaved) {
+		hoist_static_render_nodes(render_nodes, transform_context);
+	}
 
 	const return_arg = build_return_expression(render_nodes);
 	if (return_arg || return_null_when_empty) {
@@ -421,6 +453,40 @@ function build_render_statements(body_nodes, return_null_when_empty, transform_c
 
 	transform_context.available_bindings = saved_bindings;
 	return statements;
+}
+
+/**
+ * Returns true when the body contains a non-JSX statement that appears
+ * after a JSX child. In that case JSX children must be captured at their
+ * source position so mutations in following statements do not retroactively
+ * change what earlier children rendered.
+ *
+ * @param {any[]} body_nodes
+ * @returns {boolean}
+ */
+function is_interleaved_body(body_nodes) {
+	let seen_jsx = false;
+	for (const child of body_nodes) {
+		if (is_bare_return_statement(child) || is_lone_return_if_statement(child)) {
+			continue;
+		}
+		if (is_jsx_child(child)) {
+			seen_jsx = true;
+		} else if (seen_jsx) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * @param {any} jsx
+ * @returns {boolean}
+ */
+function is_capturable_jsx_child(jsx) {
+	if (!jsx) return false;
+	const t = jsx.type;
+	return t === 'JSXElement' || t === 'JSXFragment' || t === 'JSXExpressionContainer';
 }
 
 /**
